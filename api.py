@@ -31,6 +31,7 @@ class BookGenerationRequest(BaseModel):
     useExperimentalConsistency: bool
     modelSelection: str
     referenceImage: str | None = None
+    referenceImageType: str | None = None
     safetyTolerance: int | None = None
 
 app = FastAPI()
@@ -53,7 +54,7 @@ def get_available_styles():
         with open(prompts_file, 'r') as f:
             prompts_data = json.load(f)
         for key, value in prompts_data.items():
-            if key.startswith("stage2_image_"):
+            if key.startswith("stage2_image_") and "_ref_" not in key:
                 # Attempt to get a description from the prompt, otherwise generate one
                 desc = value.get("description", "Custom Style")
                 styles.append({"key": key, "desc": desc})
@@ -109,7 +110,11 @@ async def websocket_endpoint(websocket: WebSocket):
         characters = {}
         if request.quickMode:
             await websocket.send_text(json.dumps({"status": "progress", "message": "Quick Mode: Inferring characters from story concept..."}))
-            inferred_chars, char_error = infer_characters(request.storyOutline)
+            inferred_chars, char_error = infer_characters(
+                request.storyOutline,
+                reference_image=request.referenceImage,
+                reference_image_type=request.referenceImageType
+            )
             if char_error:
                 await websocket.send_text(json.dumps({"status": "error", "message": f"Error inferring characters: {char_error}"}))
                 return
@@ -205,7 +210,14 @@ async def websocket_endpoint(websocket: WebSocket):
             # --- Stage 1: Generate Single Page Structure ---
             print(f"--- Running Stage 1: Generating Structure for Page {page_num}... ---")
             page_data, message_history, error1 = generate_single_page_structure(
-                characters, request.storyOutline, page_num, message_history, request.numberOfPages, style_type=style_type
+                characters,
+                request.storyOutline,
+                page_num,
+                message_history,
+                request.numberOfPages,
+                style_type=style_type,
+                reference_image=request.referenceImage,
+                reference_image_type=request.referenceImageType
             )
 
             if error1:
@@ -253,8 +265,17 @@ async def websocket_endpoint(websocket: WebSocket):
             prompt_template_key = None
 
             try:
-                prompt_template_key = request.selectedStyle
-                if request.useExperimentalConsistency and page_num > 0: # Use edit template for page 1+ if consistency is on
+                base_style_key = request.selectedStyle
+                prompt_template_key = base_style_key
+
+                if request.modelSelection == 'replicate' and request.referenceImage and request.referenceImageType:
+                    specialized_key = f"{base_style_key}_ref_{request.referenceImageType}"
+                    if specialized_key in PROMPTS:
+                        prompt_template_key = specialized_key
+                    else:
+                        print(f"Warning: Specialized prompt '{specialized_key}' not found. Using default.")
+
+                elif request.useExperimentalConsistency and page_num > 0: # Use edit template for page 1+ if consistency is on
                      prompt_template_key = f"{request.selectedStyle}_edit"
                      if prompt_template_key not in PROMPTS:
                           print(f"Warning: Edit template '{prompt_template_key}' not found. Falling back to standard.")
@@ -267,12 +288,14 @@ async def websocket_endpoint(websocket: WebSocket):
                 if not img_prompt_template:
                      raise KeyError(f"Image prompt template '{prompt_template_key}' not found in prompts.json")
 
+                style_description = PROMPTS.get(base_style_key, {}).get('description', 'a standard illustration style')
 
                 image_prompt = img_prompt_template.format(
                     scene_description=scene_desc,
                     character_details_string=char_details_string,
                     page_text=page_content_text if text_key_for_image == "page_text" else "",
-                    script_text=page_content_text if text_key_for_image == "script_text" else ""
+                    script_text=page_content_text if text_key_for_image == "script_text" else "",
+                    style_description=style_description
                 )
             except KeyError as e:
                 print(f"Error accessing image prompt template or formatting for page {page_num}: {e}")

@@ -13,6 +13,7 @@ const characters = ref<{ name: string; description: string }[]>([
 ]); // For Full Mode
 const modelSelection = ref('openai'); // New: 'openai' or 'replicate'
 const referenceImageFile = ref<File | null>(null); // New: For the uploaded image file
+const referenceImageType = ref('style'); // New: 'style', 'character', or 'setting'
 const safetyTolerance = ref(6); // New: For Replicate safety tolerance
 
 // Reactive variables for generation status
@@ -86,6 +87,7 @@ const generateBook = () => {
       useExperimentalConsistency: useExperimentalConsistency.value,
       modelSelection: modelSelection.value,
       referenceImage: referenceImageData,
+      referenceImageType: referenceImageType.value,
       safetyTolerance: safetyTolerance.value,
     };
 
@@ -187,6 +189,21 @@ const generateBook = () => {
     <div class="form-group" v-if="modelSelection === 'replicate'">
       <label for="referenceImage">Reference Image (Optional):</label>
       <input type="file" id="referenceImage" @change="handleFileUpload" accept="image/*" />
+    </div>
+
+    <div class="form-group" v-if="modelSelection === 'replicate' && referenceImageFile">
+      <label>Use Reference Image For:</label>
+      <div class="radio-group">
+        <label>
+          <input type="radio" value="style" v-model="referenceImageType" /> Style
+        </label>
+        <label>
+          <input type="radio" value="character" v-model="referenceImageType" /> Character(s)
+        </label>
+        <label>
+          <input type="radio" value="setting" v-model="referenceImageType" /> Setting/Background
+        </label>
+      </div>
     </div>
 
     <div class="form-group" v-if="modelSelection === 'replicate'">

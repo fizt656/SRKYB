@@ -53,7 +53,7 @@ def check_api_key():
     return True
 
 # --- Stage 1: Text Generation (Single Page with History) ---
-def generate_single_page_structure(characters, story_outline, page_number, message_history, total_pages=10, model="gpt-4o", style_type="childrens"):
+def generate_single_page_structure(characters, story_outline, page_number, message_history, total_pages=10, model="gpt-4o", style_type="childrens", reference_image=None, reference_image_type=None):
     """
     Generates the structure (scene description, page text OR script text) for a single page
     using the Chat Completions API, maintaining conversational history.
@@ -66,6 +66,8 @@ def generate_single_page_structure(characters, story_outline, page_number, messa
         total_pages (int): The total number of pages in the book.
         model (str): The chat model to use (e.g., "gpt-4o").
         style_type (str): The type of style ('childrens' or 'narrative') to determine prompt and output structure.
+        reference_image (str, optional): Base64 encoded image data. Defaults to None.
+        reference_image_type (str, optional): The type of reference ('style', 'character', 'setting'). Defaults to None.
 
     Returns:
         dict or None: A dictionary for the single page if successful (containing 'page_text' or 'script_text'), otherwise None.
@@ -80,15 +82,25 @@ def generate_single_page_structure(characters, story_outline, page_number, messa
     current_history = list(message_history) # Work with a copy
 
     try:
-        # Select the appropriate Stage 1 prompt based on style type
+        # Select the appropriate Stage 1 prompt based on style type and reference image
         if style_type == "narrative":
-            prompt_key = 'stage1_text_generation_narrative_page'
+            base_prompt_key = 'stage1_text_generation_narrative_page'
             expected_text_key = 'script_text'
-            print("Using narrative text generation prompt.")
         else: # Default to childrens
-            prompt_key = 'stage1_text_generation_single_page'
+            base_prompt_key = 'stage1_text_generation_single_page'
             expected_text_key = 'page_text'
-            print("Using childrens text generation prompt.")
+
+        prompt_key = base_prompt_key
+        if reference_image and reference_image_type:
+            ref_prompt_key = f"{base_prompt_key}_ref"
+            if ref_prompt_key in PROMPTS:
+                prompt_key = ref_prompt_key
+                print(f"Using vision-enabled text generation prompt: {prompt_key}")
+            else:
+                print(f"Warning: Vision-enabled prompt '{ref_prompt_key}' not found. Falling back to standard text prompt.")
+        else:
+            print(f"Using standard text generation prompt: {prompt_key}")
+
 
         try:
             stage1_prompts = PROMPTS[prompt_key]
@@ -101,20 +113,31 @@ def generate_single_page_structure(characters, story_outline, page_number, messa
         if page_number == 1:
             # Initial prompt for the first page
             characters_json_str = json.dumps(characters, indent=2)
-            try:
-                user_prompt = prompt_template.format(
-                    characters_json=characters_json_str,
-                    story_outline=story_outline,
-                    page_number=page_number,
-                    total_pages=total_pages
-                )
-            except Exception as e:
-                 print(f"Error formatting initial prompt for page {page_number}: {e}")
-                 raise
+            user_prompt_text = prompt_template.format(
+                characters_json=characters_json_str,
+                story_outline=story_outline,
+                page_number=page_number,
+                total_pages=total_pages,
+                reference_image_type=reference_image_type
+            )
+
+            user_message_content = [
+                {"type": "text", "text": user_prompt_text}
+            ]
+
+            if reference_image:
+                user_message_content.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": reference_image,
+                        "detail": "high"
+                    }
+                })
+
             # Start the history
             current_history = [
                 {"role": "system", "content": system_msg},
-                {"role": "user", "content": user_prompt}
+                {"role": "user", "content": user_message_content}
             ]
         else:
             # Subsequent prompts just ask for the next page
@@ -341,13 +364,16 @@ def edit_image_from_prompt(previous_image_data, prompt_text, size="1536x1024", q
 
 
 # --- Character Inference ---
-def infer_characters(story_concept, model="gpt-4o"):
+def infer_characters(story_concept, model="gpt-4o", reference_image=None, reference_image_type=None):
     """
     Infers potential characters and descriptions based on a story concept using the Chat Completions API.
+    If a reference image for characters is provided, it uses vision to describe the character.
 
     Args:
         story_concept (str): A brief description of the story's theme or plot.
         model (str): The chat model to use (e.g., "gpt-4o").
+        reference_image (str, optional): Base64 encoded image data. Defaults to None.
+        reference_image_type (str, optional): The type of reference ('style', 'character', 'setting'). Defaults to None.
 
     Returns:
         dict or None: A dictionary mapping character names to descriptions if successful, otherwise None.
@@ -356,8 +382,27 @@ def infer_characters(story_concept, model="gpt-4o"):
     if not check_api_key() or client is None:
         return None, "API key not configured or client not initialized."
 
-    system_message = "You are an assistant skilled at identifying key characters from a story concept and providing brief visual descriptions suitable for an illustrator."
-    user_prompt = f"""Analyze the following story concept and identify 2-4 main characters that would likely appear. For each character, provide a concise visual description (appearance, notable features, clothing style if relevant).
+    system_message = "You are an assistant skilled at identifying key characters from a story concept or an image and providing brief visual descriptions suitable for an illustrator."
+    user_message_content = []
+
+    if reference_image and reference_image_type == 'character':
+        print("--- Using vision-based character inference ---")
+        user_prompt_text = """Analyze the provided image. Identify the main character or characters.
+Provide a detailed physical description for each character you identify.
+Invent a suitable name for each character.
+Output ONLY a single, valid JSON object mapping the invented character names (string keys) to their detailed descriptions (string values).
+Example format:
+{
+  "Character Name 1": "Detailed visual description from image...",
+  "Character Name 2": "Detailed visual description from image..."
+}"""
+        user_message_content.extend([
+            {"type": "text", "text": user_prompt_text},
+            {"type": "image_url", "image_url": {"url": reference_image, "detail": "high"}}
+        ])
+    else:
+        print("--- Using text-based character inference ---")
+        user_prompt_text = f"""Analyze the following story concept and identify 2-4 main characters that would likely appear. For each character, provide a concise visual description (appearance, notable features, clothing style if relevant).
 
 Story Concept: "{story_concept}"
 
@@ -366,6 +411,8 @@ Output ONLY a single, valid JSON object mapping character names (string keys) to
   "Character Name 1": "Brief visual description...",
   "Character Name 2": "Brief visual description..."
 }}"""
+        user_message_content.append({"type": "text", "text": user_prompt_text})
+
 
     try:
         print("\n--- Sending request to Chat Completions API for character inference ---")
@@ -373,7 +420,7 @@ Output ONLY a single, valid JSON object mapping character names (string keys) to
             model=model,
             messages=[
                 {"role": "system", "content": system_message},
-                {"role": "user", "content": user_prompt}
+                {"role": "user", "content": user_message_content}
             ],
             response_format={"type": "json_object"},
             max_tokens=500 # Should be enough for a few character descriptions
